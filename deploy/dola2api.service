@@ -1,0 +1,103 @@
+# Dola2API systemd 服务
+#
+# 安装步骤：
+#
+#   1. 建一个专用账号（不要用 root 跑）：
+#        sudo useradd --system --home /opt/dola2api --shell /usr/sbin/nologin dola2api
+#
+#   2. 放好程序（二进制 + 前端产物 + 数据目录）：
+#        sudo mkdir -p /opt/dola2api/data
+#        sudo cp dola2api /opt/dola2api/
+#        sudo cp -r frontend/dist /opt/dola2api/frontend/
+#        sudo chown -R dola2api:dola2api /opt/dola2api
+#
+#   3. 写环境文件（里面是首次启动的管理员密码，权限务必收紧）：
+#        sudo mkdir -p /etc/dola2api
+#        sudo install -m 600 -o root -g root /dev/null /etc/dola2api/env
+#        echo 'DOLA2API_ADMIN_PASSWORD=换成你的密码' | sudo tee /etc/dola2api/env
+#
+#   4. 装服务：
+#        sudo cp deploy/dola2api.service /etc/systemd/system/
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now dola2api
+#        journalctl -u dola2api -f
+#
+# 编译时建议加 -ldflags "-s -w" 去掉符号表，体积能小一半。
+
+[Unit]
+Description=Dola2API — dola.com 的 OpenAI 兼容网关
+Documentation=https://github.com/juangchuank-ops/dola2api
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dola2api
+Group=dola2api
+WorkingDirectory=/opt/dola2api
+
+# 管理员密码只在首次启动（数据文件里还没有密码）时使用，之后改密走管理台。
+# 放进 EnvironmentFile 而不是直接写在 ExecStart 里：unit 文件是全局可读的，
+# 而 `ps` 能看到完整命令行。
+EnvironmentFile=-/etc/dola2api/env
+
+ExecStart=/opt/dola2api/dola2api \
+    -addr 127.0.0.1:8080 \
+    -data /opt/dola2api/data \
+    -static /opt/dola2api/frontend/dist
+
+# 收到 SIGTERM 后 main 会做 10 秒的优雅关闭（关 HTTP + 落盘）。
+# 给它留够时间，别让 systemd 提前 SIGKILL。
+TimeoutStopSec=30
+
+# 端口被占或数据目录不可写这类问题会让进程立刻退出，退避重试而不是刷屏。
+Restart=on-failure
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dola2api
+
+# ────────────────────────────────────────────────────────────────────
+# 加固
+# ────────────────────────────────────────────────────────────────────
+
+# 服务本身不需要任何特权。
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+
+# 整个文件系统只读，仅 data/ 可写。
+# 注意：程序位置必须在这条规则之外可读——如果部署在 /home/xxx 下，
+# ProtectHome=true 会让它读不到，那种情况请去掉这一行或改用 /opt。
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dola2api/data
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# 出站 HTTPS 和 DNS 查询走 INET/INET6。AF_UNIX 是给 nscd、systemd-resolved
+# 这类本地 DNS 缓存用的 —— 漏掉它，域名解析会失败，表现成「连不上上游」，
+# 而且报错信息不会指向这里。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+LockPersonality=true
+# Go 运行时不用 JIT，禁止可写+可执行的内存映射是安全的。
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# 每个连接占一个 fd，并发高时默认的 1024 会先于 CPU 见底。
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

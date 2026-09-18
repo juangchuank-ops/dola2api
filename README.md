@@ -181,6 +181,10 @@ tools/
   contract.py           前后端接口契约检查（路径 / 方法）
   fields.py             DTO 字段契约检查（响应字段 / TS 类型）
   render.mjs            真实浏览器渲染检查（CDP，需本机 Chrome）
+deploy/
+  dola2api.service      systemd 单元（含安全加固，安装步骤在文件头注释）
+  nginx.conf            反代站点配置（SSE 缓冲 / 访问控制 / 媒体直供）
+  env.example           环境变量模板
 ```
 
 ### 持久化设计
@@ -268,27 +272,33 @@ node tools/render.mjs http://127.0.0.1:8080 http://127.0.0.1:9222 你的密码
 
 ## 部署
 
-生产建议：
+`deploy/` 下是可以直接用的配置：
+
+| 文件 | 用途 |
+| --- | --- |
+| `deploy/dola2api.service` | systemd 服务单元（含安全加固），安装步骤写在文件头部注释里 |
+| `deploy/nginx.conf` | Nginx 反代站点配置：SSE 缓冲、管理台访问控制、媒体文件直供 |
+| `deploy/env.example` | 环境变量模板 |
+
+要点：
 
 1. `go build -ldflags "-s -w"` 出精简二进制，配合 `frontend/dist` 一起丢到服务器
-2. 用 systemd / supervisor 常驻，监听 `127.0.0.1:8080`
-3. 前置 Nginx 反代，注意 **关闭响应缓冲**，否则 SSE 流式会被攒批：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_read_timeout 600s;
-    chunked_transfer_encoding on;
-}
-```
-
+2. 用 systemd 常驻，监听 `127.0.0.1:8080`，以专用低权账号运行
+3. 前置 Nginx 反代，**关闭响应缓冲**，否则 SSE 流式会被攒批
 4. 管理台只对内网开放，或加一层访问控制
 5. `data/` 目录做好备份——账号 Cookie 都在里面
+
+### 为什么 SSE 要关三层缓冲
+
+只关 `proxy_buffering` 是不够的。另外两层同样会把逐字输出攒成一坨，表现是「接口像卡了很久，然后一次性吐出一大段」：
+
+| 指令 | 不关会怎样 |
+| --- | --- |
+| `proxy_buffering off` | 上游响应先攒进内存或临时文件再转发 |
+| `proxy_request_buffering off` | 请求体先落盘再转发，长请求会延迟到达上游 |
+| `gzip off` | 压缩本身要凑够一个块才输出 |
+
+`deploy/nginx.conf` 里这三条都写在 `/v1/` 的 location 里了。
 
 ### 静态资源缓存
 
