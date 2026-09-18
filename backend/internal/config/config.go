@@ -138,6 +138,9 @@ const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 // Normalize repairs out-of-range values coming from a stored config file.
 func (s *Settings) Normalize(dataDir string) {
 	def := DefaultSettings(dataDir)
+	if s.Server.Addr == "" {
+		s.Server.Addr = def.Server.Addr
+	}
 	if s.Server.MaxConcurrentRequests <= 0 {
 		s.Server.MaxConcurrentRequests = def.Server.MaxConcurrentRequests
 	}
@@ -173,8 +176,16 @@ func (s *Settings) Normalize(dataDir string) {
 	if s.Routing.CooldownBaseSec <= 0 {
 		s.Routing.CooldownBaseSec = def.Routing.CooldownBaseSec
 	}
-	if s.Routing.CooldownMaxSec < s.Routing.CooldownBaseSec {
+	if s.Routing.CooldownMaxSec <= 0 {
 		s.Routing.CooldownMaxSec = def.Routing.CooldownMaxSec
+	}
+	if s.Routing.CooldownMaxSec < s.Routing.CooldownBaseSec {
+		// Raise the ceiling to the base rather than substituting the default.
+		// The base may legitimately sit above the default ceiling (an operator
+		// can configure a long cooldown), and dropping in the default would
+		// then leave max < base all over again. The invariant that matters is
+		// that the backoff ramp never starts past its own cap.
+		s.Routing.CooldownMaxSec = s.Routing.CooldownBaseSec
 	}
 	if s.Routing.MaxAttempts < 1 || s.Routing.MaxAttempts > 20 {
 		s.Routing.MaxAttempts = def.Routing.MaxAttempts
@@ -184,6 +195,11 @@ func (s *Settings) Normalize(dataDir string) {
 	}
 	if s.Routing.StickyTTLSec < 0 {
 		s.Routing.StickyTTLSec = def.Routing.StickyTTLSec
+	}
+	if s.Audit.RetentionDays <= 0 {
+		// A non-positive window puts the retention cutoff at or after "now",
+		// so the next prune would delete every audit record.
+		s.Audit.RetentionDays = def.Audit.RetentionDays
 	}
 	if s.Audit.MaxRecords < 100 {
 		s.Audit.MaxRecords = def.Audit.MaxRecords

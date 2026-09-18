@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -92,9 +93,13 @@ func main() {
 func registerDebug(mux *http.ServeMux) {
 	local := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			// SplitHostPort understands bracketed IPv6 literals. Slicing at the
+			// last colon instead leaves the brackets in place, so "[::1]:12345"
+			// becomes "[::1]" and never matches the "::1" this list expects —
+			// locking an IPv6 loopback client out of its own diagnostics.
 			host := r.RemoteAddr
-			if idx := strings.LastIndex(host, ":"); idx >= 0 {
-				host = host[:idx]
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
 			}
 			if host != "127.0.0.1" && host != "::1" && host != "localhost" {
 				http.Error(w, "not found", http.StatusNotFound)
