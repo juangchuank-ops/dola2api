@@ -405,6 +405,34 @@ func (a *Account) clone() *Account {
 	return &out
 }
 
+// clone returns a detached copy of a client key. ClientKey holds only value
+// types, so a shallow copy is a deep copy.
+func (k *ClientKey) clone() *ClientKey {
+	if k == nil {
+		return nil
+	}
+	out := *k
+	return &out
+}
+
+// clone returns a detached copy of a model config.
+func (m *ModelConfig) clone() *ModelConfig {
+	if m == nil {
+		return nil
+	}
+	out := *m
+	return &out
+}
+
+// clone returns a detached copy of an audit record.
+func (r *Audit) clone() *Audit {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	return &out
+}
+
 // ListAccounts returns a detached snapshot of every account. Callers may read
 // and even mutate the result without holding any lock and without affecting the
 // store; all writes must go through the mutation helpers.
@@ -473,7 +501,7 @@ func (s *Store) UpdateAccount(id string, apply func(*Account)) (*Account, error)
 			account.Status = StatusActive
 		}
 		s.markDirtyLocked()
-		return account, nil
+		return account.clone(), nil
 	}
 	return nil, ErrNotFound
 }
@@ -609,8 +637,10 @@ func (s *Store) AccountGroups() []string {
 func (s *Store) ListClientKeys() []*ClientKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*ClientKey, len(s.state.ClientKeys))
-	copy(out, s.state.ClientKeys)
+	out := make([]*ClientKey, 0, len(s.state.ClientKeys))
+	for _, key := range s.state.ClientKeys {
+		out = append(out, key.clone())
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
 }
@@ -620,7 +650,7 @@ func (s *Store) ClientKeyByValue(value string) (*ClientKey, bool) {
 	defer s.mu.RUnlock()
 	for _, key := range s.state.ClientKeys {
 		if key.Key == value {
-			return key, true
+			return key.clone(), true
 		}
 	}
 	return nil, false
@@ -652,7 +682,7 @@ func (s *Store) UpdateClientKey(id string, apply func(*ClientKey)) (*ClientKey, 
 		}
 		apply(key)
 		s.markDirtyLocked()
-		return key, nil
+		return key.clone(), nil
 	}
 	return nil, ErrNotFound
 }
@@ -690,8 +720,10 @@ func (s *Store) BumpClientKeyUsage(id string) {
 func (s *Store) ListModels() []*ModelConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*ModelConfig, len(s.state.Models))
-	copy(out, s.state.Models)
+	out := make([]*ModelConfig, 0, len(s.state.Models))
+	for _, model := range s.state.Models {
+		out = append(out, model.clone())
+	}
 	return out
 }
 
@@ -700,7 +732,7 @@ func (s *Store) ModelByID(id string) (*ModelConfig, bool) {
 	defer s.mu.RUnlock()
 	for _, model := range s.state.Models {
 		if model.ID == id {
-			return model, true
+			return model.clone(), true
 		}
 	}
 	return nil, false
@@ -715,7 +747,9 @@ func (s *Store) UpdateModel(id string, apply func(*ModelConfig)) (*ModelConfig, 
 		}
 		apply(model)
 		s.markDirtyLocked()
-		return model, nil
+		// Return a snapshot: callers serialise this straight into a response,
+		// and handing out the live pointer would race with the next writer.
+		return model.clone(), nil
 	}
 	return nil, ErrNotFound
 }
@@ -748,8 +782,10 @@ func (s *Store) AppendAudit(audit *Audit) {
 func (s *Store) ListAudits() []*Audit {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]*Audit, len(s.state.Audits))
-	copy(out, s.state.Audits)
+	out := make([]*Audit, 0, len(s.state.Audits))
+	for _, audit := range s.state.Audits {
+		out = append(out, audit.clone())
+	}
 	return out
 }
 
@@ -758,7 +794,7 @@ func (s *Store) AuditByID(id string) (*Audit, bool) {
 	defer s.mu.RUnlock()
 	for _, audit := range s.state.Audits {
 		if audit.ID == id {
-			return audit, true
+			return audit.clone(), true
 		}
 	}
 	return nil, false

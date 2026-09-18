@@ -271,3 +271,96 @@ func TestAccountByIDReturnsDetachedCopy(t *testing.T) {
 		t.Fatal("unknown id reported as found")
 	}
 }
+
+// The same detachment rule that applies to accounts applies to every other
+// collection the console serialises: a returned pointer must not alias the live
+// state, or a concurrent writer races with the response encoder.
+func TestListModelsReturnsDetachedSnapshot(t *testing.T) {
+	st := newTestStore(t)
+
+	models := st.ListModels()
+	if len(models) == 0 {
+		t.Fatal("default catalogue is empty")
+	}
+	target := models[0]
+
+	// Mutating the snapshot must not reach the store.
+	target.Enabled = !target.Enabled
+	target.Name = "tampered"
+
+	live, ok := st.ModelByID(target.ID)
+	if !ok {
+		t.Fatal("model missing")
+	}
+	if live.Name == "tampered" {
+		t.Fatal("snapshot mutation leaked into the store")
+	}
+
+	// And a store write must not rewrite an already returned snapshot.
+	before := st.ListModels()[0]
+	if _, err := st.UpdateModel(before.ID, func(m *ModelConfig) { m.Name = "renamed" }); err != nil {
+		t.Fatalf("update model: %v", err)
+	}
+	if before.Name == "renamed" {
+		t.Fatal("store mutation rewrote a previously returned snapshot")
+	}
+
+	// Two reads must not hand back the same pointer.
+	if st.ListModels()[0] == st.ListModels()[0] {
+		t.Fatal("ListModels returned the same pointer twice")
+	}
+}
+
+func TestListClientKeysReturnsDetachedSnapshot(t *testing.T) {
+	st := newTestStore(t)
+
+	created, err := st.CreateClientKey("snapshot-key", 10, 2)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	keys := st.ListClientKeys()
+	if len(keys) != 1 {
+		t.Fatalf("keys = %d, want 1", len(keys))
+	}
+	keys[0].Name = "tampered"
+	keys[0].Enabled = false
+
+	live, ok := st.ClientKeyByValue(created.Key)
+	if !ok {
+		t.Fatal("key missing")
+	}
+	if live.Name == "tampered" || !live.Enabled {
+		t.Fatalf("snapshot mutation leaked into the store: %+v", live)
+	}
+
+	// UpdateClientKey must also hand back a detached copy.
+	updated, err := st.UpdateClientKey(created.ID, func(k *ClientKey) { k.Name = "renamed" })
+	if err != nil {
+		t.Fatalf("update key: %v", err)
+	}
+	updated.Name = "tampered-again"
+	if again, _ := st.ClientKeyByValue(created.Key); again.Name != "renamed" {
+		t.Fatalf("returned pointer aliases the live key: %q", again.Name)
+	}
+}
+
+func TestListAuditsReturnsDetachedSnapshot(t *testing.T) {
+	st := newTestStore(t)
+
+	st.AppendAudit(&Audit{ID: "audit_1", Model: "dola-fast", Status: 200})
+
+	audits := st.ListAudits()
+	if len(audits) != 1 {
+		t.Fatalf("audits = %d, want 1", len(audits))
+	}
+	audits[0].Status = 500
+
+	live, ok := st.AuditByID("audit_1")
+	if !ok {
+		t.Fatal("audit missing")
+	}
+	if live.Status == 500 {
+		t.Fatal("snapshot mutation leaked into the store")
+	}
+}

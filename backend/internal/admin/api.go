@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"dola2api/internal/config"
 	"dola2api/internal/dola"
@@ -387,7 +388,10 @@ func bucketKey(at time.Time, days int) string {
 
 func (a *API) listAccounts(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	page := maxInt(1, config.ParseIntOrDefault(query.Get("page"), 1))
+	// pageSize was bounded but page was not: a large enough page makes
+	// (page-1)*pageSize overflow into a negative offset, and the slice
+	// expression at the end of this handler then panics.
+	page := clampInt(config.ParseIntOrDefault(query.Get("page"), 1), 1, 1_000_000)
 	pageSize := clampInt(config.ParseIntOrDefault(query.Get("pageSize"), 20), 1, 500)
 	search := strings.ToLower(strings.TrimSpace(query.Get("search")))
 	status := query.Get("status")
@@ -411,7 +415,11 @@ func (a *API) listAccounts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if search != "" {
-			haystack := strings.ToLower(account.Name + " " + account.Remark + " " + account.Group + " " + account.Cookie)
+			// Match the masked cookie, never the raw one. AccountView exists
+			// precisely so the raw cookie never leaves the server, and matching
+			// it here would let an operator read it back out through the search
+			// box, one character at a time.
+			haystack := strings.ToLower(account.Name + " " + account.Remark + " " + account.Group + " " + store.MaskCookie(account.Cookie))
 			if !strings.Contains(haystack, search) {
 				continue
 			}
@@ -422,14 +430,14 @@ func (a *API) listAccounts(w http.ResponseWriter, r *http.Request) {
 	sortViews(views, sortBy, sortOrder)
 
 	total := len(views)
+	// The start < 0 guard covers arithmetic overflow; the page clamp above
+	// already makes it unreachable, but the two together mean this slice
+	// expression cannot be handed a negative index.
 	start := (page - 1) * pageSize
-	if start > total {
+	if start < 0 || start > total {
 		start = total
 	}
-	end := start + pageSize
-	if end > total {
-		end = total
-	}
+	end := minInt(start+pageSize, total)
 
 	_, active, cooldown, disabled, invalid, routable := a.pool.Summary()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -475,15 +483,21 @@ func (a *API) accountGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"groups": a.store.AccountGroups()})
 }
 
+// accountPayload is shared by create and update. Group and remark are pointers
+// so that a PATCH can tell "field not sent" (leave it alone) apart from "field
+// sent as empty" (clear it). As plain strings they were overwritten
+// unconditionally, so patching only the enabled flag silently wiped an
+// account's grouping - which contradicts the Partial<> type the console
+// declares for this call.
 type accountPayload struct {
-	Name          string `json:"name"`
-	Cookie        string `json:"cookie"`
-	Group         string `json:"group"`
-	Remark        string `json:"remark"`
-	Priority      int    `json:"priority"`
-	MaxConcurrent int    `json:"maxConcurrent"`
-	Enabled       *bool  `json:"enabled"`
-	Kind          string `json:"kind"`
+	Name          string  `json:"name"`
+	Cookie        string  `json:"cookie"`
+	Group         *string `json:"group"`
+	Remark        *string `json:"remark"`
+	Priority      int     `json:"priority"`
+	MaxConcurrent int     `json:"maxConcurrent"`
+	Enabled       *bool   `json:"enabled"`
+	Kind          string  `json:"kind"`
 }
 
 func (a *API) createAccount(w http.ResponseWriter, r *http.Request) {
@@ -511,14 +525,18 @@ func (a *API) createAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	account := &store.Account{
-		Name:          strings.TrimSpace(payload.Name),
-		Kind:          firstNonEmpty(payload.Kind, store.KindCookie),
-		Cookie:        payload.Cookie,
-		Group:         strings.TrimSpace(payload.Group),
-		Remark:        strings.TrimSpace(payload.Remark),
-		Enabled:       enabled,
-		Priority:      clampInt(payload.Priority, 1, 100),
-		MaxConcurrent: clampInt(payload.MaxConcurrent, 1, 256),
+		Name:   strings.TrimSpace(payload.Name),
+		Kind:   firstNonEmpty(payload.Kind, store.KindCookie),
+		Cookie: payload.Cookie,
+		Group:  optionalString(payload.Group),
+		Remark: optionalString(payload.Remark),
+		Enabled: enabled,
+		// clampPositive leaves 0 alone so AddAccount can apply its own default
+		// (priority 50, concurrency 2). Clamping 0 into the range instead made
+		// every account created without an explicit priority outrank all the
+		// existing ones.
+		Priority:      clampPositive(payload.Priority, 1, 100),
+		MaxConcurrent: clampPositive(payload.MaxConcurrent, 1, 256),
 	}
 	if err := a.store.AddAccount(account); err != nil {
 		if err == store.ErrAlreadyExists {
@@ -552,8 +570,14 @@ func (a *API) updateAccount(w http.ResponseWriter, r *http.Request) {
 			account.FailCount = 0
 			account.LastError = ""
 		}
-		account.Group = strings.TrimSpace(payload.Group)
-		account.Remark = strings.TrimSpace(payload.Remark)
+		// Only touch these when the caller actually sent them; a nil pointer
+		// means "unchanged", an empty string means "clear it".
+		if payload.Group != nil {
+			account.Group = strings.TrimSpace(*payload.Group)
+		}
+		if payload.Remark != nil {
+			account.Remark = strings.TrimSpace(*payload.Remark)
+		}
 		if payload.Priority > 0 {
 			account.Priority = clampInt(payload.Priority, 1, 100)
 		}
@@ -1130,7 +1154,9 @@ func (a *API) updateModel(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) listAudits(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	page := maxInt(1, config.ParseIntOrDefault(query.Get("page"), 1))
+	// Same overflow hazard as listAccounts: bound the page, then guard the
+	// offset below.
+	page := clampInt(config.ParseIntOrDefault(query.Get("page"), 1), 1, 1_000_000)
 	pageSize := clampInt(config.ParseIntOrDefault(query.Get("pageSize"), 20), 1, 500)
 	search := strings.ToLower(strings.TrimSpace(query.Get("search")))
 	status := query.Get("status")
@@ -1155,7 +1181,7 @@ func (a *API) listAudits(w http.ResponseWriter, r *http.Request) {
 
 	total := len(filtered)
 	start := (page - 1) * pageSize
-	if start > total {
+	if start < 0 || start > total {
 		start = total
 	}
 	end := minInt(start+pageSize, total)
@@ -1256,6 +1282,10 @@ func (a *API) saveSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// Rotating the credential must invalidate live sessions, exactly as the
+		// dedicated password endpoint does - otherwise a leaked token keeps
+		// working after the password it belongs to is gone.
+		a.store.RevokeAllSessions()
 	}
 
 	a.getSettings(w, r)
@@ -1305,6 +1335,24 @@ func clampInt(value, low, high int) int {
 	return value
 }
 
+// clampPositive clamps into range but passes a non-positive value through
+// unchanged, so "not provided" stays distinguishable from "set to the minimum"
+// and the caller can still apply its own default.
+func clampPositive(value, low, high int) int {
+	if value <= 0 {
+		return 0
+	}
+	return clampInt(value, low, high)
+}
+
+// optionalString dereferences an optional JSON string field, trimming it.
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -1341,5 +1389,11 @@ func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit] + "…"
+	// Cut on a rune boundary: slicing at a fixed byte offset splits multi-byte
+	// characters and pushes invalid UTF-8 into the response.
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut] + "…"
 }
