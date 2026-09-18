@@ -199,7 +199,7 @@ go test ./...            # 单元测试（含并发/重入锁回归）
 go vet ./...
 ```
 
-覆盖四个核心包，其中三个完全不依赖网络：
+覆盖全部七个包：
 
 | 包 | 覆盖内容 |
 | --- | --- |
@@ -207,8 +207,13 @@ go vet ./...
 | `internal/pool` | 账号筛选（禁用/无效/无 Cookie/冷却过期）、四种调度策略、粘性会话、退避与封顶、并发调度与状态写入 |
 | `internal/dola` | SSE 解析全链路——分片帧、尾部无空行、推理/答案分离、媒体去重、错误映射、请求体构造 |
 | `internal/gateway` | 端到端请求路径——鉴权、限流、故障转移、OpenAI 响应格式、流式、审计、图像生成 |
+| `internal/admin` | 管理台全部路由的端到端——鉴权与会话轮换、账号 CRUD 与分页边界、批量操作、导入导出、密钥生命周期、模型、审计、设置 |
+| `internal/config` | 设置规范化——默认值填充、各类下界、冷却上限不低于基数、审计保留期；flag 与环境变量的优先级 |
+| `cmd/dola2api` | pprof 的 loopback 白名单（含 IPv6 字面量）、CORS 预检、SPA 回退与缓存头 |
 
-上游用 `httptest.NewServer` 顶替，因此不需要真实 Cookie 就能覆盖完整链路。
+需要触网的包用 `httptest.NewServer` 顶替上游，不需要真实 Cookie 就能覆盖完整链路；其余是纯逻辑，毫秒级完成。
+
+> `config` 的用例里有一对互为对照的断言：零值 Settings 中**该**填默认的字段，以及零值本身有意义的字段（`PreferIdle` / `RecordBody` / `AutoDownload` 三个开关，和 `CapacityWaitSec` / `StickyTTLSec` 的 0）。后者一旦被「修复」成默认值，操作员就再也关不掉粘性路由和正文记录——写这类规范化代码时，`== 0` 和 `< 0` 的区别比看上去重要。
 
 > `pool` 里的死锁与并发用例用 `channel + timeout` 断言，而不是裸 `t.Fatal`——测试进程卡住时，超时能给出失败信息而不是整体挂起。
 
