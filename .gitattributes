@@ -1,0 +1,37 @@
+# 仓库内统一用 LF 存储，检出时不做转换。
+# Windows 上如果不声明，core.autocrlf 会让同一个文件在不同机器上
+# 出现整文件级别的换行符 diff。
+* text=auto eol=lf
+
+# 二进制文件不参与换行符处理
+*.exe   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.mp4   binary
+*.zip   binary
+
+# 源码与文档
+*.go    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.py    text eol=lf
+*.mjs   text eol=lf
+
+# Windows 脚本保留 CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# 锁文件不计入语言统计
+package-lock.json linguist-generated=true

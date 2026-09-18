@@ -1,0 +1,22 @@
+# 后端二进制（dola2api 不带斜杠会连 backend/cmd/dola2api/ 目录一起忽略）
+/dola2api
+dola2api.exe
+dola2api.exe~
+
+# 运行时数据（账号 Cookie、客户端密钥，切勿提交）
+/data/
+
+# 前端
+/frontend/node_modules/
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo
+
+# 本地工具目录
+.workbuddy-ai/
+
+# 临时文件
+.smoke*
+.shots/
+.chrome-profile/
+*.log
+goroutine.txt
