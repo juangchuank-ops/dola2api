@@ -311,6 +311,7 @@ Cookie 失效了。重新登录 dola.com 取一份新的 Cookie 覆盖即可。
 默认转存到 `data/generated/`，通过 `/media/` 对外提供。可在系统设置里改目录、公开前缀和容量上限。
 
 ---
+谢[linux.do]linux.do社区
 
 ## 免责声明
 
